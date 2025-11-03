@@ -26,7 +26,7 @@ alpha <- 3 # Weibull shape parameter
 L_med <- 6  # Desired median lifetime for baseline group (years)
 beta <- L_med / (log(2))^(1 / alpha)  # Weibull scale parameter
 
-# AFT coefficients (for binary covariates)
+# AFT coefficients
 b_age <- 0.25                 # Age effect
 b_age2   <- 0.15 
 b_smoker <- -0.6              # Smoking effect
@@ -300,4 +300,5 @@ overall_log <- log_summary %>%
 # log mse table
 cat("==== LOG-SCALE METRICS ====\n")
 print(overall_log)
+
 
