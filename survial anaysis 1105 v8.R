@@ -16,9 +16,9 @@ set.seed(3456)
 n_points <- c(100, 300, 600)
 
 # Censoring times (study end dates) #Chronic Non-Communicable Diseases
-time1 <- 2 # years
-time2 <- 4 # years  
-time3 <- 5 # years
+time1 <- 4 # years
+time2 <- 6 # years  
+time3 <- 10 # years
 censoring_times <- c(time1, time2, time3)
 
 # AFT Weibull parameters
@@ -71,9 +71,9 @@ apply_censoring <- function(true_time, ctime) {
 
 # Show an example of generated data
 set.seed(123)
-#example
-n <- 300
-ctime <- 8
+#example - using actual simulation parameters
+n <- 300  # one of the sample sizes used: c(100, 300, 600)
+ctime <- 6  # one of the censoring times used: c(4, 6, 10)
 #from generated data
 example_df <- gen_data(n)
 censored_df <- apply_censoring(example_df$true_time, ctime)
@@ -110,7 +110,7 @@ p2 <- ggplot(example_data, aes(x = true_time)) +
 overview_plot <- (p1 | p2) +
   plot_annotation(
     title = "Simulation Overview",
-    subtitle = "Data generated from AFT-Weibull model with censoring (study time = 8 years / sample size = 300)",
+    subtitle = "Example data from AFT-Weibull model with censoring (study time = 6 years / sample size = 300).",
     theme = theme(plot.title = element_text(size = 16, face = "bold"))
   )
 
@@ -314,15 +314,15 @@ median_summary <- res_long_raw %>%
   group_by(dataset_name, model) %>%
   summarise(
     median_pred = median(winsorize_vec(pred), na.rm = TRUE),
-    median_true = median(winsorize_vec(true_time), na.rm = TRUE),
+    median_true = median(true_time, na.rm = TRUE),  # True values not winsorized
     .groups = "drop"
   )
 
-##Add censoring_time information
+##Add censoring_time and n_points information
 median_summary <- median_summary %>%
   left_join(
     bind_rows(datasets, .id = "dataset_name") %>%
-      select(dataset_name, censoring_time) %>%
+      select(dataset_name, censoring_time, n_points) %>%
       distinct(),
     by = "dataset_name"
   )
@@ -352,10 +352,21 @@ median_by_study <- median_summary %>%
     .groups = "drop"
   )
 
+##Metrics stratified by sample size
+median_by_n <- median_summary %>%
+  group_by(model, n_points) %>%
+  summarise(
+    Median_MSE = mean(mse_median, na.rm = TRUE),
+    Median_Bias = mean(bias_median, na.rm = TRUE),
+    .groups = "drop"
+  )
+
 cat("MEDIAN-BASED METRICS\n")
 print(overall_median)
 cat("\nMEDIAN-BASED METRICS BY STUDY LENGTH\n")
 print(median_by_study)
+cat("\nMEDIAN-BASED METRICS BY SAMPLE SIZE\n")
+print(median_by_n)
 
 
 ##Log-scale version (optional, for robustness check)
@@ -367,7 +378,7 @@ log_summary <- res_long_log %>%
   group_by(dataset_name, model) %>%
   summarise(
     median_pred_log = median(winsorize_vec(pred_log), na.rm = TRUE),
-    median_true_log = median(winsorize_vec(true_log), na.rm = TRUE),
+    median_true_log = median(true_log, na.rm = TRUE),  # True values not winsorized
     mse_log = (median_pred_log - median_true_log)^2,
     bias_log = median_pred_log - median_true_log,
     .groups = "drop"
@@ -403,9 +414,10 @@ print(log_by_study)
 
 
 ##CI Coverage (Median-based)
-# For each model, compute CI range based on median_pred across datasets
+# For each model, censoring_time, AND n_points, compute CI range based on median_pred
+# This ensures CI is computed separately for each combination of censoring scenario and sample size
 ci_ranges <- median_summary %>%
-  group_by(model) %>%
+  group_by(model, censoring_time, n_points) %>%
   summarise(
     ci_low = quantile(median_pred, 0.025, na.rm = TRUE),
     ci_high = quantile(median_pred, 0.975, na.rm = TRUE),
@@ -414,7 +426,7 @@ ci_ranges <- median_summary %>%
 
 # Check if median_true falls within CI for each dataset
 coverage_summary <- median_summary %>%
-  left_join(ci_ranges, by = "model") %>%
+  left_join(ci_ranges, by = c("model", "censoring_time", "n_points")) %>%
   mutate(
     covered = as.numeric(median_true >= ci_low & median_true <= ci_high)
   )
@@ -435,10 +447,20 @@ coverage_by_study <- coverage_summary %>%
     .groups = "drop"
   )
 
+##Coverage stratified by sample size
+coverage_by_n <- coverage_summary %>%
+  group_by(model, n_points) %>%
+  summarise(
+    Mean_Coverage_95 = mean(covered, na.rm = TRUE),
+    .groups = "drop"
+  )
+
 cat("95% CI COVERAGE (Median-based)\n")
 print(overall_coverage)
 cat("\n95% CI COVERAGE BY STUDY LENGTH\n")
 print(coverage_by_study)
+cat("\n95% CI COVERAGE BY SAMPLE SIZE\n")
+print(coverage_by_n)
 
 
 ### 5. Visualization of Model Performance (Updated for Median-based Evaluation)
@@ -577,3 +599,64 @@ stratified_plot <- ggplot(stratified_data,
   )
 
 stratified_plot
+
+## Stratified visualization by sample size
+# Rename models for stratified plot by sample size
+median_by_n$model <- recode(median_by_n$model,
+                               "aft_raw" = "AFT (Weibull)",
+                               "cox_raw" = "Cox",
+                               "naive_raw" = "Naive")
+
+coverage_by_n$model <- recode(coverage_by_n$model,
+                                 "aft_raw" = "AFT (Weibull)",
+                                 "cox_raw" = "Cox",
+                                 "naive_raw" = "Naive")
+
+# Combine MSE, Bias, and Coverage for stratified plot by sample size
+stratified_data_n <- median_by_n %>%
+  pivot_longer(cols = c(Median_MSE, Median_Bias),
+               names_to = "Metric", values_to = "Value") %>%
+  mutate(
+    Metric = recode(Metric,
+                   "Median_MSE" = "MSE",
+                   "Median_Bias" = "Bias"),
+    n_points = factor(n_points)
+  ) %>%
+  bind_rows(
+    coverage_by_n %>%
+      rename(Value = Mean_Coverage_95) %>%
+      mutate(Metric = "CI Coverage",
+             n_points = factor(n_points))
+  )
+
+stratified_plot_n <- ggplot(stratified_data_n, 
+                          aes(x = n_points, y = Value, 
+                              color = model, group = model)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  facet_wrap(~Metric, scales = "free_y", ncol = 1) +
+  geom_hline(
+    data = subset(stratified_data_n, Metric == "Bias"),
+    aes(yintercept = 0),
+    color = "black", linetype = "dashed"
+  ) +
+  geom_hline(
+    data = subset(stratified_data_n, Metric == "CI Coverage"),
+    aes(yintercept = 0.95),
+    color = "red", linetype = "dashed", linewidth = 1
+  ) +
+  labs(
+    title = "Model Performance by Sample Size",
+    subtitle = "How model performance changes with different sample sizes",
+    x = "Sample Size (n)",
+    y = "Value",
+    color = "Model"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "bottom"
+  )
+
+stratified_plot_n
