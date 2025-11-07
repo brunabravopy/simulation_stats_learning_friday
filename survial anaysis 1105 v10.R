@@ -28,7 +28,7 @@ beta <- L_med / (log(2))^(1 / alpha)  # Weibull scale parameter
 
 # AFT coefficients
 b_age <- -0.25                 # Age effect
-b_age2   <- 0.15 
+b_age2   <- 0.15               #Non linear age effect
 b_smoker <- -0.6              # Smoking effect
 b_sex <- 0.2                 # Sex effect
 
@@ -192,7 +192,7 @@ for (dname in names(datasets)) {
   ## Naive model
   naive_fit <- lm(time_obs ~ age_std + smoker + sex, data = train)
   naive_pred <- predict(naive_fit, newdata = test)
-  naive_pred_cap <- pmin(naive_pred, 25)
+  naive_pred_cap <- pmin(naive_pred, 25) #cap
   
   ## All predictor
   all_preds[[dname]] <- data.frame(
@@ -235,41 +235,10 @@ ggplot(res_long_raw, aes(x = true_time, y = pred_time, color = model)) +
   ) +
   coord_cartesian(xlim = c(0, 25), ylim = c(0, 25))
 
-# Predictor with different parameters
-res_aft <- bind_rows(all_preds, .id = "dataset_name") %>%
-  select(dataset_name, true_time, aft_pred = aft_raw) %>%
-  left_join(
-    bind_rows(datasets, .id = "dataset_name") %>%
-      select(dataset_name, n_points, censoring_time),
-    by = "dataset_name"
-  ) %>%
-  mutate(
-    abs_error = abs(aft_pred - true_time),
-    bias = aft_pred - true_time
-  )
-
-summary_aft <- res_aft %>%
-  group_by(n_points, censoring_time) %>%
-  summarise(
-    mean_pred = mean(aft_pred, na.rm = TRUE),
-    mean_true = mean(true_time, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-summary_aft_long <- summary_aft %>%
-  pivot_longer(cols = c(mean_pred, mean_true),
-               names_to = "Type", values_to = "Mean_Survival") %>%
-  mutate(
-    Type = recode(Type,
-                  "mean_pred" = "Predicted (AFT)",
-                  "mean_true" = "True (Simulated)")
-  )
-
-
-### 4. Evaluation (Median-based approach)
+# Evaluation 
 res <- bind_rows(all_preds)
 
-##Winsorize helper: trim 1% extremes to avoid outliers
+#Winsorize
 winsorize_vec <- function(x, lower_p = 0.01, upper_p = 0.99) {
   q <- quantile(x, probs = c(lower_p, upper_p), na.rm = TRUE)
   x[x < q[1]] <- q[1]
@@ -277,12 +246,12 @@ winsorize_vec <- function(x, lower_p = 0.01, upper_p = 0.99) {
   x
 }
 
-##Prepare long format for median-based computation
+##add all together in rows instead of columns
 res_long_raw <- res %>%
   pivot_longer(cols = c(aft_raw, cox_raw, naive_raw),
                names_to = "model", values_to = "pred")
 
-##For each dataset & model: compute median(pred) & median(true_time)
+# calc medians of datasets grouping by models
 median_summary <- res_long_raw %>%
   group_by(dataset_name, model) %>%
   summarise(
@@ -291,7 +260,7 @@ median_summary <- res_long_raw %>%
     .groups = "drop"
   )
 
-##Add censoring_time and n_points information
+# include censoring and samples
 median_summary <- median_summary %>%
   left_join(
     bind_rows(datasets, .id = "dataset_name") %>%
@@ -300,14 +269,14 @@ median_summary <- median_summary %>%
     by = "dataset_name"
   )
 
-##Compute squared error and bias between medians
+##Compute squared error and bias
 median_summary <- median_summary %>%
   mutate(
     mse_median = (median_pred - median_true)^2,
     bias_median = median_pred - median_true
   )
 
-##Aggregate across datasets (main metrics) - overall and by study length
+#Aggregate across datasets 
 overall_median <- median_summary %>%
   group_by(model) %>%
   summarise(
@@ -316,7 +285,7 @@ overall_median <- median_summary %>%
     .groups = "drop"
   )
 
-##Metrics stratified by study length
+#Metrics stratified by parameters
 median_by_study <- median_summary %>%
   group_by(model, censoring_time) %>%
   summarise(
@@ -325,7 +294,6 @@ median_by_study <- median_summary %>%
     .groups = "drop"
   )
 
-##Metrics stratified by sample size
 median_by_n <- median_summary %>%
   group_by(model, n_points) %>%
   summarise(
@@ -342,9 +310,7 @@ cat("\nMEDIAN-BASED METRICS BY SAMPLE SIZE\n")
 print(median_by_n)
 
 
-##CI Coverage (Median-based)
-# For each model, censoring_time, AND n_points, compute CI range based on median_pred
-# This ensures CI is computed separately for each combination of censoring scenario and sample size
+##CI Coverage (Median-based) - CI coverage calc with params held study
 ci_ranges <- median_summary %>%
   group_by(model, censoring_time, n_points) %>%
   summarise(
@@ -360,7 +326,7 @@ coverage_summary <- median_summary %>%
     covered = as.numeric(median_true >= ci_low & median_true <= ci_high)
   )
 
-# Calculate mean coverage across datasets for each model (overall and by study length)
+# Calculate mean coverage across datasets for each model for all params
 overall_coverage <- coverage_summary %>%
   group_by(model) %>%
   summarise(
@@ -368,7 +334,7 @@ overall_coverage <- coverage_summary %>%
     .groups = "drop"
   )
 
-##Coverage stratified by study length
+##Coverage stratified by params 
 coverage_by_study <- coverage_summary %>%
   group_by(model, censoring_time) %>%
   summarise(
@@ -376,7 +342,7 @@ coverage_by_study <- coverage_summary %>%
     .groups = "drop"
   )
 
-##Coverage stratified by sample size
+
 coverage_by_n <- coverage_summary %>%
   group_by(model, n_points) %>%
   summarise(
@@ -391,9 +357,8 @@ print(coverage_by_study)
 cat("\n95% CI COVERAGE BY SAMPLE SIZE\n")
 print(coverage_by_n)
 
+#Visualization of Model Performance with new names
 
-### 5. Visualization of Model Performance (Updated for Median-based Evaluation)
-## Rename models for clarity
 overall_median$model <- recode(overall_median$model,
                                "aft_raw" = "AFT (Weibull)",
                                "cox_raw" = "Cox",
@@ -404,7 +369,7 @@ overall_coverage$model <- recode(overall_coverage$model,
                                  "cox_raw" = "Cox",
                                  "naive_raw" = "Naive")
 
-## Combine all metrics into one unified table
+# Combine all metrics in one table
 measure_summary <- overall_median %>%
   rename(MSE = Median_MSE, Bias = Median_Bias) %>%
   left_join(overall_coverage, by = "model")
@@ -412,7 +377,7 @@ measure_summary <- overall_median %>%
 cat("\n==== Combined Model Performance Table (Median-based Evaluation) ====\n")
 print(measure_summary)
 
-## Reshape for plotting
+# Reshape for plotting
 measure_long <- measure_summary %>%
   pivot_longer(cols = -model, names_to = "Metric", values_to = "Value") %>%
   mutate(
@@ -423,7 +388,7 @@ measure_long <- measure_summary %>%
     )
   )
 
-## Colors and plot
+
 metric_colors <- c(
   "MSE" = "#4E79A7",
   "Bias" = "#59A14F",
@@ -432,7 +397,7 @@ metric_colors <- c(
 
 
 ## Stratified visualization by study length
-# Rename models for stratified plot
+# Rename models 
 median_by_study$model <- recode(median_by_study$model,
                                "aft_raw" = "AFT (Weibull)",
                                "cox_raw" = "Cox",
@@ -492,8 +457,8 @@ stratified_plot <- ggplot(stratified_data,
 
 stratified_plot
 
-## Stratified visualization by sample size
-# Rename models for stratified plot by sample size
+## Same as above for sample size
+
 median_by_n$model <- recode(median_by_n$model,
                                "aft_raw" = "AFT (Weibull)",
                                "cox_raw" = "Cox",
